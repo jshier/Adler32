@@ -48,8 +48,7 @@ func adler32Checksum(of data: Data) -> UInt32 {
 
             s1 %= prime
             s2 %= prime
-        }
-        else {
+        } else {
             var remainingCount = pointer.count
             // maxIteration is the largest n such that 255n(n + 1) / 2 + (n + 1)(prime - 1) <= 2^32 - 1, per libz.
             let maxIteration = 5552
