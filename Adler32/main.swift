@@ -26,7 +26,7 @@ func dc_deflate(_ data: Data) -> Data {
 }
 
 // Swift port of libz algorithm from https://github.com/madler/zlib/blob/04f42ceca40f73e2978b50e93806c2a18c1281fc/adler32.c#L63
-@inline(__always)
+//@inline(__always)
 func adler32Checksum(of data: Data) -> UInt32 {
     var s1: UInt32 = 1 & 0xffff
     var s2: UInt32 = (1 >> 16) & 0xffff
@@ -89,7 +89,164 @@ func adler32Checksum(of data: Data) -> UInt32 {
     return ((s2 << 16) | s1).bigEndian
 }
 
-@inline(__always)
+func loadMany_adler32Checksum(of data: Data) -> UInt32 {
+    var s1: UInt32 = 1 & 0xffff
+    var s2: UInt32 = (1 >> 16) & 0xffff
+    let prime: UInt32 = 65521
+
+    data.withUnsafeBytes { pointer in
+        if pointer.count == 1, let byte = pointer.first {
+            s1 += UInt32(byte)
+            s1 %= prime
+            s2 += s1
+            s2 %= prime
+        } else if pointer.count < 16 {
+            var position = 0
+            while position < pointer.count {
+                s1 += UInt32(pointer[position])
+                s2 += s1
+                position += 1
+            }
+
+            s1 %= prime
+            s2 %= prime
+        } else {
+            var remainingCount = pointer.count
+            // maxIteration is the largest n such that 255n(n + 1) / 2 + (n + 1)(prime - 1) <= 2^32 - 1, per libz.
+            let maxIteration = 5552
+            var position = 0
+
+            while remainingCount >= maxIteration {
+                remainingCount -= maxIteration
+                var loops = maxIteration / 16 // evenly divisible
+
+                repeat {
+                    let firstEight = pointer.load(fromByteOffset: position, as: UInt64.self)
+                    position += 8
+                    let secondEight = pointer.load(fromByteOffset: position, as: UInt64.self)
+                    position += 8
+
+                    for shift in stride(from: 0, through: 56, by: 8) {
+                        s1 += UInt32((firstEight >> shift) & 0xFF)
+                        s2 += s1
+                    }
+
+                    for shift in stride(from: 0, through: 56, by: 8) {
+                        s1 += UInt32((secondEight >> shift) & 0xFF)
+                        s2 += s1
+                    }
+
+                    s1 %= prime
+                    s2 %= prime
+                    loops -= 1
+                } while loops > 0
+            }
+
+            if remainingCount > 0 {
+                while position < pointer.count {
+                    s1 += UInt32(pointer[position])
+                    s2 += s1
+                    remainingCount -= 1
+                    position += 1
+                }
+
+                s1 %= prime
+                s2 %= prime
+            }
+        }
+    }
+
+    return ((s2 << 16) | s1).bigEndian
+}
+
+//@inline(__always)
+func wrapping_adler32Checksum(of data: Data) -> UInt32 {
+    var s1: UInt32 = 1 & 0xffff
+    var s2: UInt32 = (1 >> 16) & 0xffff
+    let prime: UInt32 = 65521
+
+    data.withUnsafeBytes { pointer in
+        if pointer.count == 1, let byte = pointer.first {
+            s1 &+= UInt32(byte)
+            s1 %= prime
+            s2 &+= s1
+            s2 %= prime
+        } else if pointer.count < 16 {
+            var position = 0
+            while position < pointer.count {
+                s1 &+= UInt32(pointer[position])
+                s2 &+= s1
+                position &+= 1
+            }
+
+            s1 %= prime
+            s2 %= prime
+        } else {
+            var remainingCount = pointer.count
+            // maxIteration is the largest n such that 255n(n + 1) / 2 + (n + 1)(prime - 1) <= 2^32 - 1, per libz.
+            let maxIteration = 5552
+            var position = 0
+
+            while remainingCount >= maxIteration {
+                remainingCount -= maxIteration
+                var loops = maxIteration / 16 // evenly divisible
+
+                repeat {
+                    var innerPosition = 0
+                    while innerPosition < 16 {
+                        s1 &+= UInt32(pointer[position + innerPosition])
+                        s2 &+= s1
+                        innerPosition &+= 1
+                    }
+                    s1 %= prime
+                    s2 %= prime
+                    position &+= innerPosition
+                    loops &-= 1
+                } while loops > 0
+            }
+
+            if remainingCount > 0 {
+                while position < pointer.count {
+                    s1 &+= UInt32(pointer[position])
+                    s2 &+= s1
+                    remainingCount &-= 1
+                    position &+= 1
+                }
+
+                s1 %= prime
+                s2 %= prime
+            }
+        }
+    }
+
+    return ((s2 << 16) | s1).bigEndian
+}
+
+func taylor_adler32Checksum(of data: Data) -> UInt32 {
+    data.withUnsafeBytes { pointer in
+        let (q, r): (Int, Int) = data.count.quotientAndRemainder(dividingBy: 5552)
+        var (single, double): (UInt32, UInt32) = (1 & 0xffff, (1 >> 16) & 0xffff)
+
+        for i: Int in 0 ..< q {
+            for j: Int in 5552 * i ..< 5552 * (i + 1) {
+                single &+= .init(pointer[j])
+                double &+= single
+            }
+            single %= 65521
+            double %= 65521
+        }
+
+        for j: Int in 5552 * q ..< 5552 * q + r {
+            single &+= .init(pointer[j])
+            double &+= single
+        }
+
+        return ((double % 65521) << 16 | (single % 65521)).bigEndian
+    }
+}
+
+
+//@inline(__always)
 func im_adler32Checksum(of data: Data) -> UInt32 {
     var s1: UInt32 = 1 & 0xffff
     var s2: UInt32 = (1 >> 16) & 0xffff
@@ -107,7 +264,7 @@ func im_adler32Checksum(of data: Data) -> UInt32 {
     return ((s2 << 16) | s1).bigEndian
 }
 
-@inline(__always)
+//@inline(__always)
 func simple_adler32Checksum(of data: Data) -> UInt32 {
     var s1: UInt32 = 1 & 0xffff
     var s2: UInt32 = (1 >> 16) & 0xffff
@@ -125,7 +282,7 @@ func simple_adler32Checksum(of data: Data) -> UInt32 {
     return ((s2 << 16) | s1).bigEndian
 }
 
-@inline(__always)
+//@inline(__always)
 func worst_adler32Checksum(of data: Data) -> UInt32 {
     var s1: UInt32 = 1 & 0xffff
     var s2: UInt32 = (1 >> 16) & 0xffff
@@ -141,7 +298,7 @@ func worst_adler32Checksum(of data: Data) -> UInt32 {
     return ((s2 << 16) | s1).bigEndian
 }
 
-@inline(__always)
+//@inline(__always)
 func dc_adler32(of data: Data) -> UInt32 {
     var adler = Adler32()
     adler.advance(withChunk: data)
@@ -187,79 +344,66 @@ func performCompressionComparison(at bytes: Int, loops: Int) {
 func performComparison(at bytes: Int, loops: Int, sleepBetweenRuns: Bool = false) {
     let ints = [UInt32](repeating: 0, count: bytes / 4).map { _ in arc4random() }
     let randomBlob = Data(bytes: ints, count: bytes)
+    let inputs: [String: (Data) -> UInt32] = [
+        "Worst": worst_adler32Checksum(of:),
+        "Simple": simple_adler32Checksum(of:),
+        "Immediate": im_adler32Checksum(of:),
+        "Complex": adler32Checksum(of:),
+        "Wrapping": wrapping_adler32Checksum(of:),
+        "LoadMany": loadMany_adler32Checksum(of:),
+        "Taylor": taylor_adler32Checksum(of:),
+        "Library": dc_adler32(of:)
+    ]
+    var outputs: [String: (checksum: UInt32, duration: Double)] = [:]
 
-    let startWorst = CFAbsoluteTimeGetCurrent()
-    var worstOutput: UInt32 = 0
-    for _ in 0..<loops {
-        worstOutput = worst_adler32Checksum(of: randomBlob)
-    }
-    let endWorst = CFAbsoluteTimeGetCurrent()
+    for input in inputs {
+        let checksum = input.value
+        let start = CFAbsoluteTimeGetCurrent()
+        var output: UInt32 = 0
+        for _ in 0..<loops {
+            output = checksum(randomBlob)
+        }
+        let end = CFAbsoluteTimeGetCurrent()
+        outputs[input.key] = (checksum: output, duration: end - start)
 
-    if sleepBetweenRuns {
-        sleep(1)
-    }
-
-    let startSimple = CFAbsoluteTimeGetCurrent()
-    var simpleOutput: UInt32 = 0
-    for _ in 0..<loops {
-        simpleOutput = simple_adler32Checksum(of: randomBlob)
-    }
-    let endSimple = CFAbsoluteTimeGetCurrent()
-
-    if sleepBetweenRuns {
-        sleep(1)
-    }
-
-    let startIm = CFAbsoluteTimeGetCurrent()
-    var imOutput: UInt32 = 0
-    for _ in 0..<loops {
-        imOutput = im_adler32Checksum(of: randomBlob)
-    }
-    let endIm = CFAbsoluteTimeGetCurrent()
-
-    if sleepBetweenRuns {
-        sleep(1)
+        if sleepBetweenRuns {
+            sleep(1)
+        }
     }
 
-    let startComplex = CFAbsoluteTimeGetCurrent()
-    var complexOutput: UInt32 = 0
-    for _ in 0..<loops {
-        complexOutput = adler32Checksum(of: randomBlob)
-    }
-    let endComplex = CFAbsoluteTimeGetCurrent()
-
-    if sleepBetweenRuns {
-        sleep(1)
-    }
-
-    let startLibrary = CFAbsoluteTimeGetCurrent()
-    var libraryOutput: UInt32 = 0
-    for _ in 0..<loops {
-        libraryOutput = dc_adler32(of: randomBlob)
-    }
-    let endLibrary = CFAbsoluteTimeGetCurrent()
-
-    let worstDuration = endWorst - startWorst
-    let simpleDuration = endSimple - startSimple
-    let imDuration = endIm - startIm
-    let complexDuration = endComplex - startComplex
-    let libraryDuration = endLibrary - startLibrary
+    let worstDuration = outputs["Worst"]!.duration
+    let simpleDuration = outputs["Simple"]!.duration
+    let imDuration = outputs["Immediate"]!.duration
+    let complexDuration = outputs["Complex"]!.duration
+    let wrappingDuration = outputs["Wrapping"]!.duration
+    let loadManyDuration = outputs["LoadMany"]!.duration
+    let taylorDuration = outputs["Taylor"]!.duration
+    let libraryDuration = outputs["Library"]!.duration
 
     print("Worst:     \(worstDuration)s")
     print("Simple:    \(simpleDuration)s")
-    print("Immediate: \(imDuration)")
+    print("Immediate: \(imDuration)s")
     print("Complex:   \(complexDuration)s")
+    print("Wrapping:  \(wrappingDuration)s")
+    print("LoadMany   \(loadManyDuration)s")
+    print("Taylor     \(taylorDuration)s")
     print("Library:   \(libraryDuration)s")
 
-    print("Worst is \(worstDuration / libraryDuration)x slower than library.")
-    print("Simple is \(simpleDuration / libraryDuration)x slower than library.")
-    print("Simple is \(worstDuration / simpleDuration)x faster than worst.")
+    print("Worst is     \(worstDuration / libraryDuration)x slower than library.")
+    print("Simple is    \(simpleDuration / libraryDuration)x slower than library.")
+    print("Simple is    \(worstDuration / simpleDuration)x faster than worst.")
     print("Immediate is \(imDuration / libraryDuration)x slower than library.")
     print("Immediate is \(worstDuration / imDuration)x faster than worst.")
-    print("Complex is \(complexDuration / libraryDuration)x slower than library.")
-    print("Complex is \(worstDuration / complexDuration)x faster than worst.")
+    print("Complex is   \(complexDuration / libraryDuration)x slower than library.")
+    print("Complex is   \(worstDuration / complexDuration)x faster than worst.")
+    print("Wrapping is  \(wrappingDuration / libraryDuration)x slower than library.")
+    print("Wrapping is  \(worstDuration / wrappingDuration)x faster than worst.")
+    print("LoadMany is  \(loadManyDuration / libraryDuration)x slower than library.")
+    print("LoadMany is  \(worstDuration / loadManyDuration)x faster than worst.")
+    print("Taylor is    \(taylorDuration / libraryDuration)x slower than library.")
+    print("Taylor is    \(worstDuration / taylorDuration)x faster than worst.")
 
-    if worstOutput == libraryOutput && simpleOutput == libraryOutput && complexOutput == libraryOutput && imOutput == libraryOutput {
+    if outputs.values.map(\.checksum).allSatisfy({ $0 == outputs["Library"]!.checksum }) {
         print("All outputs match!")
     } else {
         print("Output mismatch!!!")
@@ -295,3 +439,6 @@ func performComparison(at bytes: Int, loops: Int, sleepBetweenRuns: Bool = false
 //performComparison(at: 16 * 1024 * 1024, loops: 10)
 
 performComparison(at: 16 * 1024 * 1024, loops: 10, sleepBetweenRuns: false)
+//performComparison(at: 15, loops: 10000000, sleepBetweenRuns: false)
+
+//performCompressionComparison(at: 16 * 1024 * 1024, loops: 10)
